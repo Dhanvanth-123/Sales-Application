@@ -39,16 +39,21 @@ async function wipe() {
   await prisma.user.deleteMany();
 }
 
+/** Bump this to force a re-seed of the live (production) database on next deploy. */
+const SEED_VERSION = '2-spread-dates';
+
 async function main() {
-  // Idempotent & deploy-safe: only seed an empty database; never wipe in production.
-  const existing = await prisma.user.count();
-  if (existing > 0) {
-    if (process.env.NODE_ENV === 'production') {
-      console.log('ℹ️  Database already has data — skipping seed (production).');
+  // Production: re-seed only when SEED_VERSION changes (idempotent across normal
+  // deploys). Local/dev: always wipe & re-seed for a fresh dataset.
+  const isProd = process.env.NODE_ENV === 'production';
+  if (isProd) {
+    const marker = await prisma.pvcIndex.findFirst({ where: { name: '__seed_version__' } });
+    if (marker?.source === SEED_VERSION) {
+      console.log(`ℹ️  Seed already at ${SEED_VERSION} — skipping.`);
       return;
     }
-    await wipe(); // local: reset & reseed
   }
+  if ((await prisma.user.count()) > 0) await wipe();
 
   console.log('🌱  Seeding CALIPER…');
 
@@ -138,18 +143,29 @@ async function main() {
       ],
     });
 
-    // sales across recent months
-    const months = ['2025-09-08', '2025-10-12', '2025-11-05', '2025-12-03'];
-    await prisma.sale.createMany({
-      data: months.map((m, k) => ({
+    // sales spread across the last 18 months (ending this month) so the dashboard
+    // and reports show a real trend and date-range filters return meaningful data.
+    const now = new Date();
+    const anchorY = now.getUTCFullYear();
+    const anchorM = now.getUTCMonth();
+    const MONTHS = 18;
+    const salesData = Array.from({ length: MONTHS }, (_, m) => {
+      const monthsAgo = MONTHS - 1 - m; // oldest first → current month last
+      const dt = new Date(Date.UTC(anchorY, anchorM - monthsAgo, 5 + (i % 18)));
+      const seasonal = 1 + 0.45 * Math.sin((m / 12) * Math.PI * 2 + i); // seasonal wave
+      const trend = 1 + m * 0.03; // mild growth over time
+      const qty = Math.max(10, Math.round((30 + i * 6) * seasonal * trend));
+      const priceFactor = 0.96 + ((m + i) % 5) * 0.02; // small price variation
+      return {
         partId: part.id,
         customerId: s.customer.id,
-        date: d(m),
-        soNo: `SO-${2025}-${1000 + i * 10 + k}`,
-        qty: 50 + k * 25,
-        unitPrice: dec(s.price),
-      })),
+        date: dt,
+        soNo: `SO-${dt.getUTCFullYear()}-${1000 + i * 100 + m}`,
+        qty,
+        unitPrice: dec(Math.round(s.price * priceFactor * 100) / 100),
+      };
     });
+    await prisma.sale.createMany({ data: salesData });
 
     // quotation
     await prisma.quotation.create({
@@ -240,6 +256,11 @@ async function main() {
   // ── one PVC index point (optional feed) ──
   await prisma.pvcIndex.create({
     data: { name: 'STEEL', date: d('2025-07-01'), value: dec(111.1), source: 'seed' },
+  });
+
+  // seed-version marker (drives production re-seed; see top of main())
+  await prisma.pvcIndex.create({
+    data: { name: '__seed_version__', date: new Date(), value: dec(0), source: SEED_VERSION },
   });
 
   console.log('✅  Seed complete. Login with admin@caliper.local / Caliper@123');

@@ -19,9 +19,10 @@ export class ReportsService {
   constructor(private readonly prisma: PrismaService) {}
 
   private bounds(f: ReportFilter) {
+    // inclusive day boundaries: from = start of day, to = end of day (UTC)
     return {
-      fromD: f.from ? new Date(f.from) : null,
-      toD: f.to ? new Date(f.to) : null,
+      fromD: f.from ? new Date(`${f.from}T00:00:00.000Z`) : null,
+      toD: f.to ? new Date(`${f.to}T23:59:59.999Z`) : null,
       cust: f.customerId || null,
     };
   }
