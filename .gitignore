@@ -31,3 +31,5 @@ coverage/
 
 # prisma local artifacts
 apps/api/prisma/*.db
+
+.vercel
