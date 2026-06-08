@@ -1,0 +1,42 @@
+# Render Blueprint — Parthasarathy CNC API + managed PostgreSQL.
+# Deploy: Render Dashboard → New → Blueprint → connect this repo.
+#
+# After the first deploy: set CORS_ORIGINS to your Vercel SPA URL (Render →
+# caliper-api → Environment). The SPA's VITE_API_BASE_URL must point to this
+# service's URL (https://caliper-api.onrender.com).
+
+databases:
+  - name: caliper-db
+    databaseName: caliper
+    user: caliper
+    plan: free
+    region: singapore
+
+services:
+  - type: web
+    name: caliper-api
+    runtime: node
+    plan: free
+    region: singapore
+    healthCheckPath: /healthz
+    # install dev deps too (nest/tsc/prisma/tsx are devDependencies)
+    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm --filter @caliper/shared build && pnpm --filter @caliper/api build
+    # migrations + idempotent seed run on boot (works on free tier, which has no
+    # pre-deploy hook); both are safe to re-run. Then start the server.
+    startCommand: pnpm --filter @caliper/api exec prisma migrate deploy && pnpm --filter @caliper/api db:seed && node apps/api/dist/main.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DATABASE_URL
+        fromDatabase:
+          name: caliper-db
+          property: connectionString
+      - key: REFRESH_TOKEN_SECRET
+        generateValue: true
+      - key: JWT_ACCESS_TTL
+        value: 15m
+      - key: REFRESH_TOKEN_TTL
+        value: 30d
+      # set this to your Vercel SPA origin after the first deploy (else CORS is open)
+      - key: CORS_ORIGINS
+        sync: false

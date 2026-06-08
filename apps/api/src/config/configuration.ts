@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import { generateKeyPairSync } from 'node:crypto';
 import { z } from 'zod';
 
 /** DI token for the resolved, typed application config. */
@@ -7,7 +8,7 @@ export const APP_CONFIG = Symbol('APP_CONFIG');
 const envSchema = z.object({
   NODE_ENV: z.string().default('development'),
   PORT: z.coerce.number().int().positive().default(4000),
-  CORS_ORIGINS: z.string().default('http://localhost:5173'),
+  CORS_ORIGINS: z.string().default(''),
   DATABASE_URL: z.string().min(1, 'DATABASE_URL is required'),
 
   JWT_PRIVATE_KEY: z.string().optional(),
@@ -22,17 +23,39 @@ const envSchema = z.object({
   REFRESH_TOKEN_TTL: z.string().default('30d'),
 });
 
-function resolveKey(label: string, inline?: string, path?: string): string {
+/** Resolve a PEM key from an inline value or a file path; null if neither is set. */
+function tryResolveKey(inline?: string, path?: string): string | null {
   if (inline && inline.trim().length > 0) {
     return inline.includes('\\n') ? inline.replace(/\\n/g, '\n') : inline;
   }
   if (path && fs.existsSync(path)) {
     return fs.readFileSync(path, 'utf8');
   }
-  throw new Error(
-    `${label} not configured. Set ${label} (inline PEM) or ${label}_PATH (file). ` +
-      `For local dev, run: pnpm --filter @caliper/api keys:gen`,
+  return null;
+}
+
+/**
+ * Resolve the RS256 keypair. Uses env/file keys when provided; otherwise generates
+ * an ephemeral in-memory keypair so the API runs zero-config on a fresh host
+ * (e.g. Render). Ephemeral keys are per-instance and reset on restart — set
+ * JWT_PRIVATE_KEY / JWT_PUBLIC_KEY for stable, multi-instance auth.
+ */
+function resolveKeyPair(env: z.infer<typeof envSchema>): { privateKey: string; publicKey: string } {
+  const privateKey = tryResolveKey(env.JWT_PRIVATE_KEY, env.JWT_PRIVATE_KEY_PATH);
+  const publicKey = tryResolveKey(env.JWT_PUBLIC_KEY, env.JWT_PUBLIC_KEY_PATH);
+  if (privateKey && publicKey) return { privateKey, publicKey };
+
+  const generated = generateKeyPairSync('rsa', {
+    modulusLength: 2048,
+    publicKeyEncoding: { type: 'spki', format: 'pem' },
+    privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+  });
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[config] No JWT keys configured — generated an ephemeral RS256 keypair. ' +
+      'Set JWT_PRIVATE_KEY / JWT_PUBLIC_KEY for stable auth across restarts/instances.',
   );
+  return generated;
 }
 
 export interface AppConfig {
@@ -52,6 +75,7 @@ export interface AppConfig {
 
 export function loadConfig(): AppConfig {
   const env = envSchema.parse(process.env);
+  const { privateKey, publicKey } = resolveKeyPair(env);
   return {
     nodeEnv: env.NODE_ENV,
     port: env.PORT,
@@ -60,8 +84,8 @@ export function loadConfig(): AppConfig {
       .filter(Boolean),
     databaseUrl: env.DATABASE_URL,
     jwt: {
-      privateKey: resolveKey('JWT_PRIVATE_KEY', env.JWT_PRIVATE_KEY, env.JWT_PRIVATE_KEY_PATH),
-      publicKey: resolveKey('JWT_PUBLIC_KEY', env.JWT_PUBLIC_KEY, env.JWT_PUBLIC_KEY_PATH),
+      privateKey,
+      publicKey,
       accessTtl: env.JWT_ACCESS_TTL,
       issuer: env.JWT_ISSUER,
       audience: env.JWT_AUDIENCE,

@@ -115,10 +115,39 @@ pnpm dev
   sale/quotation/labour/operation). Pricing/cycle/quality sections are read-only here —
   their write flows land in Phases 2–3.
 
+## Deployment (SPA on Vercel · API + Postgres on Render)
+
+The API is a long-running NestJS server, so it goes on **Render** (with a managed
+Postgres); the SPA is a static build on **Vercel**.
+
+### 1. API + database → Render (Blueprint)
+
+1. Render Dashboard → **New → Blueprint** → connect this repo. It reads
+   [`render.yaml`](render.yaml) and provisions `caliper-db` (Postgres) + `caliper-api`.
+2. The blueprint wires `DATABASE_URL` from the DB, generates `REFRESH_TOKEN_SECRET`,
+   and on boot runs `prisma migrate deploy` + the **idempotent** seed (demo data is
+   created once on the empty DB; later deploys skip it).
+3. JWT keys: none are required — the API generates an ephemeral RS256 keypair if
+   `JWT_PRIVATE_KEY`/`JWT_PUBLIC_KEY` aren't set. For stable multi-instance auth, set
+   those env vars to a real PEM pair (`pnpm --filter @caliper/api keys:gen`).
+4. Copy the API URL (e.g. `https://caliper-api.onrender.com`).
+
+### 2. SPA → Vercel
+
+1. Import this repo in Vercel and set **Root Directory = `apps/web`** (Vite is
+   auto-detected; [`apps/web/vercel.json`](apps/web/vercel.json) adds the SPA route
+   fallback).
+2. Add env var **`VITE_API_BASE_URL`** = your Render API URL, then deploy.
+3. Back on Render, set **`CORS_ORIGINS`** = your Vercel URL (e.g.
+   `https://parthasarathy-cnc.vercel.app`) to lock down CORS.
+
+> Note: Render's free Postgres/web tiers sleep when idle (first request after sleep is
+> slow) and the DB expires after 90 days — fine for a demo, upgrade for production.
+
 ## Roadmap
 
-Phases 2–6 (pricing/PVC + audit, cycle time & quality/CI, reports/export, RBAC + audit
-UI, SSO/files/notifications) follow the implementation plan §13.
+All plan phases (0–6) are implemented. Optional follow-ups: assisted PVC from a
+commodity-index feed, Entra ID SSO, and materialised report rollups for scale (§13).
 
 ## Security notes
 

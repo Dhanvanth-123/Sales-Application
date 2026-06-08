@@ -5,7 +5,6 @@
   "description": "CALIPER API — NestJS + Prisma",
   "scripts": {
     "build": "prisma generate && nest build",
-    "postinstall": "prisma generate",
     "dev": "nest start --watch",
     "start": "node dist/main.js",
     "start:prod": "node dist/main.js",

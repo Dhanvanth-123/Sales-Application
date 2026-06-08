@@ -40,12 +40,17 @@ async function wipe() {
 }
 
 async function main() {
-  if (process.env.NODE_ENV === 'production') {
-    throw new Error('Refusing to run destructive seed with NODE_ENV=production');
+  // Idempotent & deploy-safe: only seed an empty database; never wipe in production.
+  const existing = await prisma.user.count();
+  if (existing > 0) {
+    if (process.env.NODE_ENV === 'production') {
+      console.log('ℹ️  Database already has data — skipping seed (production).');
+      return;
+    }
+    await wipe(); // local: reset & reseed
   }
 
   console.log('🌱  Seeding CALIPER…');
-  await wipe();
 
   const passwordHash = await hash(DEFAULT_PASSWORD, ARGON2_OPTS);
 

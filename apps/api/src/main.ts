@@ -13,7 +13,9 @@ async function bootstrap(): Promise<void> {
 
   app.use(contextMiddleware);
   app.use(helmet());
-  app.enableCors({ origin: cfg.corsOrigins, credentials: true });
+  // When CORS_ORIGINS is unset, reflect the request origin (allow all) — auth is
+  // bearer-token based (no cookies). Set CORS_ORIGINS in production to lock down.
+  app.enableCors({ origin: cfg.corsOrigins.length > 0 ? cfg.corsOrigins : true, credentials: true });
   app.useGlobalFilters(new AllExceptionsFilter());
   app.enableShutdownHooks();
 
