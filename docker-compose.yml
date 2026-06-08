@@ -1,0 +1,87 @@
+# CALIPER local / self-hosted stack (plan §11 Option 2).
+#
+#   Dev:        docker compose up -d postgres redis minio
+#               (run api/web on the host with `pnpm dev`)
+#   Full stack: docker compose --profile full up -d --build
+#
+# Infra (postgres/redis/minio) has no profile, so a bare `up` starts only those.
+#
+# NOTE: host ports are deliberately offset (Postgres 5433, Redis 6380, MinIO
+# 9100/9101, API 4100, Web 8081) so CALIPER coexists with other local stacks that
+# use the standard ports. Container-internal ports remain standard.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: caliper
+      POSTGRES_PASSWORD: caliper
+      POSTGRES_DB: caliper
+    ports:
+      - '5433:5432'
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U caliper -d caliper']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '6380:6379'
+    volumes:
+      - redisdata:/data
+
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: caliper
+      MINIO_ROOT_PASSWORD: caliper-secret
+    ports:
+      - '9100:9000'
+      - '9101:9001'
+    volumes:
+      - miniodata:/data
+
+  api:
+    profiles: ['full']
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      CORS_ORIGINS: http://localhost:8081
+      DATABASE_URL: postgresql://caliper:caliper@postgres:5432/caliper?schema=public
+      JWT_PRIVATE_KEY_PATH: /run/secrets/jwt_private
+      JWT_PUBLIC_KEY_PATH: /run/secrets/jwt_public
+      REFRESH_TOKEN_SECRET: ${REFRESH_TOKEN_SECRET:-change_me_change_me_change_me_64}
+      REDIS_URL: redis://redis:6379
+    volumes:
+      - ./apps/api/secrets/jwt.private.pem:/run/secrets/jwt_private:ro
+      - ./apps/api/secrets/jwt.public.pem:/run/secrets/jwt_public:ro
+    ports:
+      - '4100:4000'
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  web:
+    profiles: ['full']
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_BASE_URL: http://localhost:4100
+    ports:
+      - '8081:80'
+    depends_on:
+      - api
+
+volumes:
+  pgdata:
+  redisdata:
+  miniodata:

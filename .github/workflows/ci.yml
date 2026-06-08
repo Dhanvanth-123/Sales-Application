@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: caliper
+          POSTGRES_PASSWORD: caliper
+          POSTGRES_DB: caliper
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U caliper -d caliper"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      DATABASE_URL: postgresql://caliper:caliper@localhost:5432/caliper?schema=public
+      REFRESH_TOKEN_SECRET: ci_refresh_secret_ci_refresh_secret_64
+      JWT_PRIVATE_KEY_PATH: ./secrets/jwt.private.pem
+      JWT_PUBLIC_KEY_PATH: ./secrets/jwt.public.pem
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Generate JWT dev keys
+        run: pnpm --filter @caliper/api keys:gen
+
+      - name: Build shared + generate Prisma client
+        run: |
+          pnpm --filter @caliper/shared build
+          pnpm --filter @caliper/api db:generate
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Build
+        run: pnpm build
+
+      - name: Run migrations (smoke)
+        working-directory: apps/api
+        run: pnpm db:deploy

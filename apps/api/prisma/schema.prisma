@@ -1,0 +1,414 @@
+// CALIPER data model — plan §5. `part` is the hub; almost everything hangs off it
+// 1-to-many. `currentPrice` / `stdCycleMin` on `part` are denormalised "current"
+// values for fast reads — the SOURCE OF TRUTH is the history tables
+// (`price_change`, `cycle_time_revision`). Audited models (R6): price_change,
+// cycle_time_revision, quality_record — see apps/api/src/common/prisma.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ───────────────────────────── enums (mirror @caliper/shared) ─────────────────────────────
+
+enum Role {
+  ADMIN
+  SALES
+  COSTING
+  QUALITY
+  VIEWER
+}
+
+enum PartStatus {
+  ACTIVE
+  INACTIVE
+  NPD
+}
+
+enum QuotationStatus {
+  WON
+  LOST
+  PENDING
+}
+
+enum FaiResult {
+  PASS
+  FAIL
+}
+
+enum PriceChangeType {
+  NEW
+  REVISION
+  PVC
+}
+
+enum QualityRecordType {
+  INSPECTION
+  COMPLAINT
+  FAI
+  AUDIT
+}
+
+enum FopaResult {
+  APPROVED
+  REJECTED
+  CONDITIONAL
+}
+
+enum PdcaStage {
+  PLAN
+  DO
+  CHECK
+  ACT
+}
+
+enum PdcaStatus {
+  OPEN
+  IN_PROGRESS
+  CLOSED
+}
+
+enum AuditAction {
+  CREATE
+  UPDATE
+  DELETE
+}
+
+// ───────────────────────────── identity ─────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  role         Role     @default(VIEWER)
+  passwordHash String? // null when provisioned via SSO
+  externalId   String?  @unique // SSO subject
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  auditLogs            AuditLog[]
+  approvedPriceChanges PriceChange[]       @relation("PriceApprover")
+  approvedCycleTimes   CycleTimeRevision[] @relation("CycleApprover")
+  approvedFopa         FopaRecord[]        @relation("FopaApprover")
+  uploadedAttachments  Attachment[]
+
+  @@map("user")
+}
+
+model Customer {
+  id          String   @id @default(cuid())
+  code        String   @unique
+  name        String
+  gstin       String?
+  contactName String?
+  email       String?
+  phone       String?
+  createdAt   DateTime @default(now())
+
+  parts      Part[]
+  sales      Sale[]
+  quotations Quotation[]
+
+  @@map("customer")
+}
+
+// ───────────────────────────── the hub ─────────────────────────────
+
+model Part {
+  id           String     @id @default(cuid())
+  partNo       String     @unique
+  description  String
+  customerId   String
+  customer     Customer   @relation(fields: [customerId], references: [id])
+  material     String?
+  drawingNo    String?
+  status       PartStatus @default(ACTIVE)
+  uom          String     @default("NOS")
+  currentPrice Decimal?   @db.Decimal(12, 2) // denormalised; truth = price_change
+  stdCycleMin  Decimal?   @db.Decimal(8, 2) // denormalised; truth = cycle_time_revision
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime   @updatedAt
+
+  labourEntries      LabourEntry[]
+  operations         Operation[]
+  sales              Sale[]
+  quotations         Quotation[]
+  faiRecords         FaiRecord[]
+  pilotLots          PilotLot[]
+  productionLots     ProductionLot[]
+  cycleTimeRevisions CycleTimeRevision[]
+  priceChanges       PriceChange[]
+  qualityRecords     QualityRecord[]
+  fopaRecords        FopaRecord[]
+  pdcaItems          PdcaItem[]
+
+  @@index([customerId])
+  @@index([status])
+  @@map("part")
+}
+
+// ───────────────────────────── cost & process ─────────────────────────────
+
+model LabourEntry {
+  id         String  @id @default(cuid())
+  partId     String
+  part       Part    @relation(fields: [partId], references: [id], onDelete: Cascade)
+  operation  String
+  grade      String?
+  ratePerHr  Decimal @db.Decimal(10, 2)
+  stdTimeMin Decimal @db.Decimal(8, 2)
+
+  @@index([partId])
+  @@map("labour_entry")
+}
+
+model Operation {
+  id        String  @id @default(cuid())
+  partId    String
+  part      Part    @relation(fields: [partId], references: [id], onDelete: Cascade)
+  seq       Int
+  operation String
+  machine   String?
+  setupMin  Decimal @default(0) @db.Decimal(8, 2)
+  cycleMin  Decimal @default(0) @db.Decimal(8, 2)
+  tooling   String?
+
+  @@index([partId])
+  @@map("operation")
+}
+
+// ───────────────────────────── commercial ─────────────────────────────
+
+model Sale {
+  id         String   @id @default(cuid())
+  partId     String
+  part       Part     @relation(fields: [partId], references: [id], onDelete: Cascade)
+  customerId String
+  customer   Customer @relation(fields: [customerId], references: [id])
+  date       DateTime
+  soNo       String?
+  qty        Int
+  unitPrice  Decimal  @db.Decimal(12, 2)
+  createdAt  DateTime @default(now())
+
+  @@index([partId])
+  @@index([customerId])
+  @@index([date])
+  @@map("sale")
+}
+
+model Quotation {
+  id          String          @id @default(cuid())
+  partId      String
+  part        Part            @relation(fields: [partId], references: [id], onDelete: Cascade)
+  customerId  String
+  customer    Customer        @relation(fields: [customerId], references: [id])
+  quoteNo     String
+  date        DateTime
+  qty         Int
+  quotedPrice Decimal         @db.Decimal(12, 2)
+  status      QuotationStatus @default(PENDING)
+  validUntil  DateTime?
+
+  @@index([partId])
+  @@index([customerId])
+  @@map("quotation")
+}
+
+// ───────────────────────────── inspection & lots ─────────────────────────────
+
+model FaiRecord {
+  id           String    @id @default(cuid())
+  partId       String
+  part         Part      @relation(fields: [partId], references: [id], onDelete: Cascade)
+  faiNo        String
+  date         DateTime
+  qtyInspected Int
+  result       FaiResult
+  inspector    String?
+  remarks      String?
+
+  @@index([partId])
+  @@map("fai_record")
+}
+
+model PilotLot {
+  id       String   @id @default(cuid())
+  partId   String
+  part     Part     @relation(fields: [partId], references: [id], onDelete: Cascade)
+  lotNo    String
+  date     DateTime
+  qty      Int
+  accepted Int      @default(0)
+  rejected Int      @default(0)
+  remarks  String?
+
+  @@index([partId])
+  @@map("pilot_lot")
+}
+
+model ProductionLot {
+  id       String   @id @default(cuid())
+  partId   String
+  part     Part     @relation(fields: [partId], references: [id], onDelete: Cascade)
+  lotNo    String
+  date     DateTime
+  qty      Int
+  accepted Int      @default(0)
+  rejected Int      @default(0)
+
+  @@index([partId])
+  @@map("production_lot")
+}
+
+// ───────────────────────────── cycle time (AUDITED — R6) ─────────────────────────────
+
+model CycleTimeRevision {
+  id           String   @id @default(cuid())
+  partId       String
+  part         Part     @relation(fields: [partId], references: [id], onDelete: Cascade)
+  rev          Int
+  date         DateTime @default(now())
+  cycleMin     Decimal  @db.Decimal(8, 2)
+  reason       String
+  approvedById String?
+  approvedBy   User?    @relation("CycleApprover", fields: [approvedById], references: [id])
+
+  @@unique([partId, rev])
+  @@index([partId])
+  @@map("cycle_time_revision")
+}
+
+// ───────────────────────────── pricing (AUDITED — R6, R2) ─────────────────────────────
+
+model PriceChange {
+  id            String          @id @default(cuid())
+  partId        String
+  part          Part            @relation(fields: [partId], references: [id], onDelete: Cascade)
+  effectiveDate DateTime
+  oldPrice      Decimal?        @db.Decimal(12, 2)
+  newPrice      Decimal         @db.Decimal(12, 2)
+  type          PriceChangeType
+  reason        String
+  approvedById  String?
+  approvedBy    User?           @relation("PriceApprover", fields: [approvedById], references: [id])
+  pvcIndexId    String?
+  pvcIndex      PvcIndex?       @relation(fields: [pvcIndexId], references: [id])
+  pvcBasis      Json? // inputs (base index, current index, weightings) — PVC reconstructable
+  createdAt     DateTime        @default(now())
+
+  @@index([partId])
+  @@index([effectiveDate])
+  @@map("price_change")
+}
+
+// ───────────────────────────── quality & CI (R4; quality_record AUDITED — R6) ─────────────────────────────
+
+model QualityRecord {
+  id      String            @id @default(cuid())
+  partId  String
+  part    Part              @relation(fields: [partId], references: [id], onDelete: Cascade)
+  date    DateTime
+  type    QualityRecordType
+  result  String?
+  defect  String?
+  ppm     Decimal?          @db.Decimal(12, 2)
+  remarks String?
+
+  @@index([partId])
+  @@map("quality_record")
+}
+
+model FopaRecord {
+  id             String     @id @default(cuid())
+  partId         String
+  part           Part       @relation(fields: [partId], references: [id], onDelete: Cascade)
+  fopaNo         String
+  date           DateTime
+  result         FopaResult
+  characteristic String?
+  remarks        String?
+  approvedById   String?
+  approvedBy     User?      @relation("FopaApprover", fields: [approvedById], references: [id])
+
+  @@index([partId])
+  @@map("fopa_record")
+}
+
+model PdcaItem {
+  id         String     @id @default(cuid())
+  partId     String
+  part       Part       @relation(fields: [partId], references: [id], onDelete: Cascade)
+  title      String
+  stage      PdcaStage  @default(PLAN)
+  issue      String?
+  action     String?
+  owner      String?
+  status     PdcaStatus @default(OPEN)
+  targetDate DateTime?
+  createdAt  DateTime   @default(now())
+  updatedAt  DateTime   @updatedAt
+
+  @@index([partId])
+  @@map("pdca_item")
+}
+
+// ───────────────────────────── attachments & audit ─────────────────────────────
+
+model Attachment {
+  id           String   @id @default(cuid())
+  entityType   String // polymorphic: 'fai_record' | 'fopa_record' | 'part' | ...
+  entityId     String
+  filename     String
+  storageKey   String
+  mime         String
+  sizeBytes    Int
+  uploadedById String?
+  uploadedBy   User?    @relation(fields: [uploadedById], references: [id])
+  createdAt    DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@map("attachment")
+}
+
+/// Append-only audit trail (R6). The app DB role is granted INSERT/SELECT only
+/// (no UPDATE/DELETE) in Phase 5 hardening — see prisma/sql/audit_append_only.sql.
+model AuditLog {
+  id        String      @id @default(cuid())
+  ts        DateTime    @default(now())
+  userId    String?
+  user      User?       @relation(fields: [userId], references: [id])
+  entity    String
+  entityId  String
+  partNo    String?
+  action    AuditAction
+  field     String?
+  oldValue  String?
+  newValue  String?
+  reason    String?
+  ipAddress String?
+
+  @@index([entity, entityId])
+  @@index([partNo])
+  @@index([ts])
+  @@map("audit_log")
+}
+
+/// Optional commodity index feed for assisted PVC (plan §6.4).
+model PvcIndex {
+  id     String   @id @default(cuid())
+  name   String // STEEL | ALUMINIUM | PIG_IRON | ...
+  date   DateTime
+  value  Decimal  @db.Decimal(14, 4)
+  source String?
+
+  priceChanges PriceChange[]
+
+  @@index([name, date])
+  @@map("pvc_index")
+}
