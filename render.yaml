@@ -19,14 +19,17 @@ services:
     plan: free
     region: singapore
     healthCheckPath: /healthz
-    # install dev deps too (nest/tsc/prisma/tsx are devDependencies)
-    buildCommand: corepack enable && pnpm install --frozen-lockfile --prod=false && pnpm --filter @caliper/shared build && pnpm --filter @caliper/api build
+    # Render provides pnpm when it detects pnpm-lock.yaml (no corepack — /usr is
+    # read-only). Install dev deps too (nest/tsc/prisma/tsx are devDependencies).
+    buildCommand: pnpm install --frozen-lockfile --prod=false && pnpm --filter @caliper/shared build && pnpm --filter @caliper/api build
     # migrations + idempotent seed run on boot (works on free tier, which has no
     # pre-deploy hook); both are safe to re-run. Then start the server.
     startCommand: pnpm --filter @caliper/api exec prisma migrate deploy && pnpm --filter @caliper/api db:seed && node apps/api/dist/main.js
     envVars:
       - key: NODE_ENV
         value: production
+      - key: NODE_VERSION
+        value: 22.11.0
       - key: DATABASE_URL
         fromDatabase:
           name: caliper-db
